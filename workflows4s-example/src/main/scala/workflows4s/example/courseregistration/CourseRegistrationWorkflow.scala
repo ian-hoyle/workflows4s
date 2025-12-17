@@ -1,13 +1,14 @@
 package workflows4s.example.courseregistration
 
 import java.io.File
+import java.nio.file.Files
 import cats.effect.IO
-import io.circe.{Decoder, Encoder}
 import org.camunda.bpm.model.bpmn.Bpmn
-import sttp.tapir.Schema
 import workflows4s.bpmn.BpmnRenderer
-import workflows4s.runtime.instanceengine.WorkflowInstanceEngine
+import workflows4s.example.courseregistration.WorkflowInputApp.wfInstance
 import workflows4s.runtime.{InMemorySyncRuntime, InMemorySyncWorkflowInstance}
+import workflows4s.mermaid.{Link, MermaidElement, MermaidFlowchart, MermaidRenderer, Node, Subgraph}
+import workflows4s.wio.internal.DebugRenderer
 import workflows4s.wio.{SignalDef, WorkflowContext}
 
 import scala.annotation.nowarn
@@ -16,7 +17,7 @@ import scala.annotation.nowarn
 object CourseRegistrationWorkflow {
 
   // start_state
-  sealed trait CourseRegistrationState derives Encoder
+  sealed trait CourseRegistrationState
   object RegistrationState {
     case object Empty                                                                                          extends CourseRegistrationState
     case class Browsing(studentId: String, semester: String, currentCR: String)                                extends CourseRegistrationState
@@ -30,8 +31,8 @@ object CourseRegistrationWorkflow {
   object Signals {
     val startBrowsing: SignalDef[BrowsingRequest, Unit] = SignalDef()
     val setPriorities: SignalDef[PriorityRequest, Unit] = SignalDef()
-    case class BrowsingRequest(studentId: String, semester: String) derives Schema, Decoder
-    case class PriorityRequest(courseRequirement: String, priorities: List[String]) derives Schema, Decoder
+    case class BrowsingRequest(studentId: String, semester: String)
+    case class PriorityRequest(courseRequirement: String, priorities: List[String])
   }
   // end_signals
 
@@ -45,7 +46,7 @@ object CourseRegistrationWorkflow {
   // end_events
 
   // start_error
-  sealed trait RegistrationError derives Encoder
+  sealed trait RegistrationError
   object RegistrationError {
     case object RegistrationClosed extends RegistrationError
     case object InvalidPriorities  extends RegistrationError
@@ -120,8 +121,7 @@ object CourseRegistrationWorkflow {
     // end_render
 
     // start_execution
-    val engine     = WorkflowInstanceEngine.basic()
-    val runtime    = InMemorySyncRuntime.create[Context.Ctx](workflow, RegistrationState.Empty, engine)
+    val runtime    = InMemorySyncRuntime.default[Context.Ctx](workflow, RegistrationState.Empty)
     val wfInstance = runtime.createInstance("student-123")
 
     println("=== Course Registration Workflow ===")
@@ -138,10 +138,42 @@ object CourseRegistrationWorkflow {
     assert(wfInstance.queryState() == recoveredInstance.queryState())
     // end_recovery
 
+    // Scala
+    wfInstance.getEvents.foreach(evt => println(s"Event -> $evt"))
+
+    println(DebugRenderer.getCurrentStateDescription(wfInstance.getProgress))
+
+    // Emit a Mermaid diagram of the current execution state for visual inspection
+    val mermaidFlowchart = MermaidRenderer.renderWorkflow(wfInstance.getProgress)
+    val mermaidWithEvents = eventTimelineSubgraph(wfInstance.getEvents.toList)
+      .fold(mermaidFlowchart)(mermaidFlowchart.addElement)
+    val mermaidFile      = new File("course-registration.mermaid").getAbsoluteFile
+    Files.createDirectories(mermaidFile.toPath.getParent)
+    Files.writeString(mermaidFile.toPath, mermaidWithEvents.render)
+    println(s"Mermaid visualization written to ${mermaidFile}")
+    println(s"Open in Mermaid Live Editor: ${mermaidWithEvents.toViewUrl}")
     wfInstance
 
+
   }
-  def main(args: Array[String]): Unit = {
+  private def eventTimelineSubgraph(events: List[RegistrationEvent]): Option[MermaidElement] =
+    Option.when(events.nonEmpty) {
+      val eventNodes = events.zipWithIndex.map { case (evt, idx) =>
+        val label = s"${idx + 1}. ${formatEvent(evt)}"
+        Node(s"evt$idx", label, shape = Some("stadium"))
+      }
+      val timelineLinks = events.indices.dropRight(1).map(idx => Link(s"evt$idx", s"evt${idx + 1}"))
+      Subgraph("eventsTimeline", "Event Timeline", eventNodes ++ timelineLinks)
+    }
+
+  private def formatEvent(evt: RegistrationEvent): String = evt match {
+    case RegistrationEvent.BrowsingStarted(studentId, semester)             => s"BrowsingStarted: $studentId @ $semester"
+    case RegistrationEvent.PrioritiesSubmitted(courseRequirement, priorities) =>
+      s"PrioritiesSubmitted: $courseRequirement -> ${priorities.mkString(",")}"
+    case RegistrationEvent.AllotmentProcessed(assignments)                  =>
+      s"AllotmentProcessed: ${assignments.map((k, v) => s"$k=$v").mkString(",")}"
+   }
+   def main(args: Array[String]): Unit = {
     val _ = run // Explicitly discard the return value
     println("Course registration workflow executed and BPMN generated!")
   }
