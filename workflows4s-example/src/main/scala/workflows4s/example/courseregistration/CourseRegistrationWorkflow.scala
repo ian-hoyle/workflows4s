@@ -1,16 +1,18 @@
 package workflows4s.example.courseregistration
 
-import java.io.File
-import java.nio.file.Files
 import cats.effect.IO
+import io.circe.Encoder
+import io.circe.generic.semiauto.deriveEncoder
 import org.camunda.bpm.model.bpmn.Bpmn
 import workflows4s.bpmn.BpmnRenderer
-import workflows4s.example.courseregistration.WorkflowInputApp.wfInstance
+import workflows4s.mermaid.*
+import workflows4s.runtime.instanceengine.WorkflowInstanceEngine
 import workflows4s.runtime.{InMemorySyncRuntime, InMemorySyncWorkflowInstance}
-import workflows4s.mermaid.{Link, MermaidElement, MermaidFlowchart, MermaidRenderer, Node, Subgraph}
 import workflows4s.wio.internal.DebugRenderer
 import workflows4s.wio.{SignalDef, WorkflowContext}
 
+import java.io.File
+import java.nio.file.Files
 import scala.annotation.nowarn
 
 @nowarn("msg=unused explicit parameter")
@@ -18,13 +20,20 @@ object CourseRegistrationWorkflow {
 
   // start_state
   sealed trait CourseRegistrationState
+  case object Empty                                                                                          extends CourseRegistrationState
+  case class Browsing(studentId: String, semester: String, currentCR: String)                                extends CourseRegistrationState
+  case class PrioritiesSet(studentId: String, semester: String, priorities: Map[String, List[String]])       extends CourseRegistrationState
+  case class RegistrationComplete(studentId: String, semester: String, assignedCourses: Map[String, String]) extends CourseRegistrationState
+  case class RegistrationFailed(state: CourseRegistrationState, reason: RegistrationError)                   extends CourseRegistrationState
   object RegistrationState {
-    case object Empty                                                                                          extends CourseRegistrationState
-    case class Browsing(studentId: String, semester: String, currentCR: String)                                extends CourseRegistrationState
-    case class PrioritiesSet(studentId: String, semester: String, priorities: Map[String, List[String]])       extends CourseRegistrationState
-    case class RegistrationComplete(studentId: String, semester: String, assignedCourses: Map[String, String]) extends CourseRegistrationState
-    case class RegistrationFailed(state: CourseRegistrationState, reason: RegistrationError)                   extends CourseRegistrationState
+    export CourseRegistrationWorkflow.{Browsing, Empty, PrioritiesSet, RegistrationComplete, RegistrationFailed}
   }
+
+  given Encoder[CourseRegistrationState]                = deriveEncoder
+  given Encoder[RegistrationState.Browsing]             = deriveEncoder
+  given Encoder[RegistrationState.PrioritiesSet]        = deriveEncoder
+  given Encoder[RegistrationState.RegistrationComplete] = deriveEncoder
+  given Encoder[RegistrationState.RegistrationFailed]   = deriveEncoder
   // end_state
 
   // start_signals
@@ -52,6 +61,7 @@ object CourseRegistrationWorkflow {
     case object InvalidPriorities  extends RegistrationError
     case object AllCoursesFull     extends RegistrationError
   }
+  given Encoder[RegistrationError] = deriveEncoder
   // end_error
 
   // start_context
@@ -121,7 +131,8 @@ object CourseRegistrationWorkflow {
     // end_render
 
     // start_execution
-    val runtime    = InMemorySyncRuntime.default[Context.Ctx](workflow, RegistrationState.Empty)
+    val engine     = WorkflowInstanceEngine.basic()
+    val runtime    = InMemorySyncRuntime.create[Context.Ctx](workflow, RegistrationState.Empty, engine)
     val wfInstance = runtime.createInstance("student-123")
 
     println("=== Course Registration Workflow ===")
@@ -144,21 +155,20 @@ object CourseRegistrationWorkflow {
     println(DebugRenderer.getCurrentStateDescription(wfInstance.getProgress))
 
     // Emit a Mermaid diagram of the current execution state for visual inspection
-    val mermaidFlowchart = MermaidRenderer.renderWorkflow(wfInstance.getProgress)
+    val mermaidFlowchart  = MermaidRenderer.renderWorkflow(wfInstance.getProgress)
     val mermaidWithEvents = eventTimelineSubgraph(wfInstance.getEvents.toList)
       .fold(mermaidFlowchart)(mermaidFlowchart.addElement)
-    val mermaidFile      = new File("course-registration.mermaid").getAbsoluteFile
+    val mermaidFile       = new File("course-registration.mermaid").getAbsoluteFile
     Files.createDirectories(mermaidFile.toPath.getParent)
     Files.writeString(mermaidFile.toPath, mermaidWithEvents.render)
     println(s"Mermaid visualization written to ${mermaidFile}")
     println(s"Open in Mermaid Live Editor: ${mermaidWithEvents.toViewUrl}")
     wfInstance
 
-
   }
   private def eventTimelineSubgraph(events: List[RegistrationEvent]): Option[MermaidElement] =
     Option.when(events.nonEmpty) {
-      val eventNodes = events.zipWithIndex.map { case (evt, idx) =>
+      val eventNodes    = events.zipWithIndex.map { case (evt, idx) =>
         val label = s"${idx + 1}. ${formatEvent(evt)}"
         Node(s"evt$idx", label, shape = Some("stadium"))
       }
@@ -167,13 +177,13 @@ object CourseRegistrationWorkflow {
     }
 
   private def formatEvent(evt: RegistrationEvent): String = evt match {
-    case RegistrationEvent.BrowsingStarted(studentId, semester)             => s"BrowsingStarted: $studentId @ $semester"
+    case RegistrationEvent.BrowsingStarted(studentId, semester)               => s"BrowsingStarted: $studentId @ $semester"
     case RegistrationEvent.PrioritiesSubmitted(courseRequirement, priorities) =>
       s"PrioritiesSubmitted: $courseRequirement -> ${priorities.mkString(",")}"
-    case RegistrationEvent.AllotmentProcessed(assignments)                  =>
+    case RegistrationEvent.AllotmentProcessed(assignments)                    =>
       s"AllotmentProcessed: ${assignments.map((k, v) => s"$k=$v").mkString(",")}"
-   }
-   def main(args: Array[String]): Unit = {
+  }
+  def main(args: Array[String]): Unit                     = {
     val _ = run // Explicitly discard the return value
     println("Course registration workflow executed and BPMN generated!")
   }

@@ -6,6 +6,8 @@ import cats.implicits.catsSyntaxOptionId
 import io.circe.Encoder
 import org.http4s.HttpRoutes
 import org.http4s.server.middleware.CORS
+import sttp.tapir.generic.auto._
+import io.circe.generic.auto.deriveDecoder
 import sttp.tapir.server.http4s.Http4sServerInterpreter
 import workflows4s.example.courseregistration.CourseRegistrationWorkflow
 import workflows4s.example.docs.pullrequest.PullRequestWorkflow
